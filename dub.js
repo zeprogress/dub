@@ -57,6 +57,26 @@
     };
     var VOICE_IDS = Object.keys(VOICES);
     var DEFAULT_REFERENCE_ID = 'c4ec5839e2044150aad40ac193a602f1'; // "Володарский"
+
+    // Поправка prosody.volume (дБ, диапазон API -20..20) на голос — измерена
+    // синтезом одной и той же тестовой фразы всеми голосами и сравнением
+    // mean_volume (ffmpeg volumedetect), усреднено по 3 разным фразам для
+    // устойчивости (см. Dub/voice_loudness_calibration.py). Без этого
+    // некоторые голоса (например, Жириновский/Морти) звучат заметно громче
+    // остальных, а Морфеус — заметно тише (там поправка почти на потолке
+    // диапазона и всё равно не выравнивает громкость полностью).
+    var VOICE_VOLUME_CORRECTION = {
+        'c4ec5839e2044150aad40ac193a602f1': -0.2, // Володарский
+        '567d30e800cc4dd6a331411c7f970a47': 0.2,  // Паша Техник
+        '4d72cce58e0b479e8aa135d8c1829edd': 3.7,  // Патрик звезда
+        '5b99cb3218ee4f1a8090fbbca8c95241': -5.9, // Морти
+        'bc8eb8dcdc184763b0a769ee03275724': -6.6, // Жириновский
+        '205c5c4aadde43d2809636ad19773e6c': 1.9,  // Стетхам
+        '493790cdb9c841f299e883478fb1b6a5': 0.8,  // СССР
+        'e43f5f43e2df470a855dad3e0f2f369b': 19.8, // Морфеус
+        '558fa6f5859d4c55adbc830c076ba445': -2.8, // Тянка
+        '54076f8bfbc54979ad33764278e5e635': -5.6  // Микки Маус
+    };
     var CHARACTER_SLOTS = 5;
     var MODES = { single: 'Один голос', roles: 'По ролям' };
 
@@ -318,8 +338,11 @@
             latency: 'normal',
             reference_id: referenceId
         };
-        if (speed && speed !== 1) {
-            body.prosody = { speed: Math.max(0.5, Math.min(2.0, speed)) };
+        var volumeCorrection = VOICE_VOLUME_CORRECTION[referenceId] || 0;
+        if ((speed && speed !== 1) || volumeCorrection) {
+            body.prosody = {};
+            if (speed && speed !== 1) body.prosody.speed = Math.max(0.5, Math.min(2.0, speed));
+            if (volumeCorrection) body.prosody.volume = Math.max(-20, Math.min(20, volumeCorrection));
         }
         return fetch(TTS_PROXY_URL, {
             method: 'POST',
