@@ -916,6 +916,34 @@
     }, 2000);
 
     // -----------------------------------------------------------------
+    // ВРЕМЕННЫЙ диагностический тест (см. чат): на одном Android TV все
+    // POST-запросы к fish-tts-proxy.player2vr.workers.dev виснут ровно
+    // на весь таймаут без единой ошибки — непонятно, специфично это для
+    // Cloudflare Workers или для внешних HTTPS-запросов вообще на этом
+    // устройстве. Тихо, в фоне, не мешая реальной озвучке, пингуем
+    // httpbin.org (не Cloudflare) тем же методом (POST, JSON, HTTPS) и
+    // логируем результат — не влияет на работу плагина, можно удалить
+    // после диагностики.
+    (function diagnosticPing() {
+        var startedAt = Date.now();
+        var ac = new AbortController();
+        var t = setTimeout(function () { ac.abort(); }, 15000);
+        console.log(LOG_PREFIX, '[диагностика] шлю тестовый POST на httpbin.org (не Cloudflare)...');
+        fetch('https://httpbin.org/post', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ping: true }),
+            signal: ac.signal
+        }).then(function (r) {
+            clearTimeout(t);
+            console.log(LOG_PREFIX, '[диагностика] httpbin.org ответил за', Date.now() - startedAt, 'мс, статус:', r.status, '— значит внешние HTTPS POST-запросы на этом устройстве в принципе работают, проблема именно в workers.dev');
+        }).catch(function (err) {
+            clearTimeout(t);
+            console.warn(LOG_PREFIX, '[диагностика] httpbin.org тоже не ответил за', Date.now() - startedAt, 'мс (' + (err && err.name) + ') — значит дело не конкретно в workers.dev, а во внешних HTTPS-запросах вообще на этом устройстве/сети');
+        });
+    })();
+
+    // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
     // В отличие от полноценного Chrome, многие WebView-движки требуют
     // ПРЯМОГО пользовательского жеста (тап/клик/нажатие пульта), чтобы
