@@ -929,6 +929,30 @@
     }, 2000);
 
     // -----------------------------------------------------------------
+    // ВРЕМЕННЫЙ диагностический тест (см. чат): POST к workers.dev
+    // виснет даже без Content-Type (значит дело не в CORS preflight).
+    // Проверяем GET именно к НАШЕМУ воркеру (fish-tts-proxy) — если
+    // виснет и он, дело в домене workers.dev целиком, а не в форме
+    // запроса. Можно удалить после диагностики.
+    (function diagnosticWorkerGet() {
+        var startedAt = Date.now();
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', TTS_PROXY_URL, true);
+        xhr.timeout = 15000;
+        console.log(LOG_PREFIX, '[диагностика:workers.dev/GET] шлю...');
+        xhr.onload = function () {
+            console.log(LOG_PREFIX, '[диагностика:workers.dev/GET] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
+        };
+        xhr.onerror = function () {
+            console.warn(LOG_PREFIX, '[диагностика:workers.dev/GET] ОШИБКА за', Date.now() - startedAt, 'мс');
+        };
+        xhr.ontimeout = function () {
+            console.warn(LOG_PREFIX, '[диагностика:workers.dev/GET] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
+        };
+        xhr.send();
+    })();
+
+    // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
     // В отличие от полноценного Chrome, многие WebView-движки требуют
     // ПРЯМОГО пользовательского жеста (тап/клик/нажатие пульта), чтобы
