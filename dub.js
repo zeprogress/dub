@@ -337,41 +337,24 @@
     // Fish Audio TTS: одна реплика за один POST-запрос
     // ---------------------------------------------------------------
     function synthOne(text, referenceId, speed) {
-        var body = {
-            text: text,
-            format: 'mp3',
-            chunk_length: 300,
-            latency: 'normal',
-            reference_id: referenceId
-        };
         var volumeCorrection = VOICE_VOLUME_CORRECTION[referenceId] || 0;
-        if ((speed && speed !== 1) || volumeCorrection) {
-            body.prosody = {};
-            if (speed && speed !== 1) body.prosody.speed = Math.max(0.5, Math.min(2.0, speed));
-            if (volumeCorrection) body.prosody.volume = Math.max(-20, Math.min(20, volumeCorrection));
-        }
-        // На одном Android TV обычный fetch() к ЛЮБОМУ внешнему хосту
-        // зависал без единой ошибки (проверено на двух не связанных
-        // друг с другом доменах, http и https) — при этом сама Lampa
-        // (постеры, метаданные, торрент-трекеры) внешний интернет видит
-        // прекрасно, судя по её собственным логам вида "[Request] GET
-        // ...", которые указывают на XMLHttpRequest, а не fetch(). Похоже,
-        // именно fetch() в этой сборке WebView урезан/сломан для внешних
-        // адресов, а XMLHttpRequest — нет. Поэтому синтез идёт через XHR.
+        // На одном Android TV POST-запросы (и через fetch, и через XHR, с
+        // телом любой формы — JSON, с preflight и без) зависали к ЛЮБОМУ
+        // внешнему хосту без единой ошибки, а обычный внешний GET отвечал
+        // быстро и нормально (проверено отдельным диагностическим тестом
+        // прямо на нашем же воркере: GET -> 405 за 491мс). Поэтому синтез
+        // идёт через GET с параметрами в query-строке — воркер сам,
+        // получив их, собирает обычный POST-запрос к Fish Audio уже НЕ из
+        // этого WebView, так что там это ограничение не действует.
+        var params = 'text=' + encodeURIComponent(text) + '&reference_id=' + encodeURIComponent(referenceId);
+        if (speed && speed !== 1) params += '&speed=' + encodeURIComponent(Math.max(0.5, Math.min(2.0, speed)));
+        if (volumeCorrection) params += '&volume=' + encodeURIComponent(Math.max(-20, Math.min(20, volumeCorrection)));
+
         return new Promise(function (resolve, reject) {
             var xhr = new XMLHttpRequest();
-            xhr.open('POST', TTS_PROXY_URL, true);
+            xhr.open('GET', TTS_PROXY_URL + '?' + params, true);
             xhr.responseType = 'arraybuffer';
             xhr.timeout = TTS_FETCH_TIMEOUT_MS;
-            // БЕЗ явного Content-Type: 'application/json' — этот заголовок
-            // делает запрос "непростым" для CORS и заставляет браузер
-            // сначала слать служебный preflight (OPTIONS). Похоже, именно
-            // на preflight и виснет эта сборка WebView (обычный GET, у
-            // которого преflight не требуется, отвечает быстро). Без
-            // явного Content-Type XHR подставит text/plain сам — запрос
-            // становится "простым", preflight не нужен. Наш Worker тело
-            // всё равно читает как есть и парсит JSON, что бы клиент ни
-            // объявил в заголовке.
             xhr.onload = function () {
                 if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
                 else reject(new Error('TTS proxy HTTP ' + xhr.status));
@@ -381,7 +364,7 @@
                 console.warn(LOG_PREFIX, 'запрос к TTS-прокси завис (' + (TTS_FETCH_TIMEOUT_MS / 1000) + 'с без ответа), обрываю:', JSON.stringify(text));
                 reject(new Error('TTS proxy XHR timeout'));
             };
-            xhr.send(JSON.stringify(body));
+            xhr.send();
         });
     }
 
@@ -934,40 +917,6 @@
         console.log(LOG_PREFIX, 'обнаружил смену видео без события player-start (похоже на автопереход к следующей серии):', src);
         handleVideoSource(src, null);
     }, 2000);
-
-    // -----------------------------------------------------------------
-    // ВРЕМЕННЫЙ диагностический тест (см. чат): POST к workers.dev
-    // виснет даже без Content-Type (значит дело не в CORS preflight).
-    // Проверяем GET именно к НАШЕМУ воркеру (fish-tts-proxy) — если
-    // виснет и он, дело в домене workers.dev целиком, а не в форме
-    // запроса. Можно удалить после диагностики.
-    (function diagnosticWorkerGet() {
-        function report(text) {
-            console.log(LOG_PREFIX, '[диагностика:workers.dev/GET]', text);
-            // отдельно ещё и всплывающим уведомлением — лог на этом ТВ
-            // обрезается по количеству строк, и диагностическую запись
-            // выталкивает шумом от обычных попыток синтеза раньше, чем
-            // её успевают найти
-            if (window.Lampa && Lampa.Noty && Lampa.Noty.show) {
-                Lampa.Noty.show('[ai-dub2 диагностика] ' + text);
-            }
-        }
-        var startedAt = Date.now();
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', TTS_PROXY_URL, true);
-        xhr.timeout = 15000;
-        report('шлю GET на ' + TTS_PROXY_URL + '...');
-        xhr.onload = function () {
-            report('ОТВЕТИЛ за ' + (Date.now() - startedAt) + 'мс, статус: ' + xhr.status);
-        };
-        xhr.onerror = function () {
-            report('ОШИБКА за ' + (Date.now() - startedAt) + 'мс');
-        };
-        xhr.ontimeout = function () {
-            report('НЕ ОТВЕТИЛ (таймаут) за ' + (Date.now() - startedAt) + 'мс');
-        };
-        xhr.send();
-    })();
 
     // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
