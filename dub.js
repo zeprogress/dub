@@ -415,6 +415,24 @@
         return next ? (next.start_ms - cue.start_ms) : (cue.end_ms - cue.start_ms + 1000);
     };
 
+    // На одном Android TV запросы к TTS-прокси иногда виснут без видимой
+    // причины (не детерминировано — тот же самый запрос то отвечает за
+    // 1.4с, то виснет на все 20с), похоже на нестабильность переиспользования
+    // TCP/TLS-соединений в древнем движке этого устройства. Раз проблема
+    // не привязана к конкретному виду запроса — лечим повтором: если
+    // попытка зависла/упала, пробуем ещё раз, а не сдаёмся сразу.
+    var SYNTH_RETRIES = 3;
+    function synthWithRetries(cueIndex, text, referenceId, speed) {
+        function attempt(n) {
+            return synthOne(text, referenceId, speed).catch(function (err) {
+                if (n >= SYNTH_RETRIES) throw err;
+                console.warn(LOG_PREFIX, 'реплика', cueIndex, 'попытка', n, 'не удалась (' + err.message + '), пробую ещё раз');
+                return attempt(n + 1);
+            });
+        }
+        return attempt(1);
+    }
+
     DubController.prototype.ensureSynthesized = function (i) {
         var self = this;
         if (this.state[i] !== 'pending') return;
@@ -423,7 +441,7 @@
         var referenceId = referenceIdForCue(cue);
         console.log(LOG_PREFIX, 'синтезирую реплику', i, JSON.stringify(cue.text), 'голос:', VOICES[referenceId] || referenceId, cue.character ? '(' + cue.character + ')' : '');
 
-        synthOne(cue.text, referenceId, 1).then(function (buf) {
+        synthWithRetries(i, cue.text, referenceId, 1).then(function (buf) {
             console.log(LOG_PREFIX, 'реплика', i, 'получена от Fish Audio,', buf.byteLength, 'байт');
             return self.ctx.decodeAudioData(buf.slice(0)).then(function (audioBuf) {
                 var allowedMs = self.budgetMs(i) + OVERLAP_TOLERANCE_MS;
@@ -439,7 +457,7 @@
                 // лучше оставить небольшое наложение на следующую реплику
                 var speed = Math.min(MAX_SPEED, synthMs / allowedMs);
                 console.log(LOG_PREFIX, 'реплика', i, 'не укладывается (' + synthMs.toFixed(0) + 'мс из ' + allowedMs.toFixed(0) + 'мс), ускоряю в', speed.toFixed(2), 'раза' + (speed >= MAX_SPEED ? ' (потолок, останется небольшое наложение)' : ''));
-                return synthOne(cue.text, referenceId, speed).then(function (buf2) {
+                return synthWithRetries(i, cue.text, referenceId, speed).then(function (buf2) {
                     return self.ctx.decodeAudioData(buf2.slice(0));
                 }).then(function (audioBuf2) {
                     self.buffers[i] = audioBuf2;
@@ -923,38 +941,6 @@
         console.log(LOG_PREFIX, 'обнаружил смену видео без события player-start (похоже на автопереход к следующей серии):', src);
         handleVideoSource(src, null);
     }, 2000);
-
-    // -----------------------------------------------------------------
-    // ВРЕМЕННЫЙ диагностический тест (см. чат): POST с реальным телом на
-    // отдельном тесте отвечал быстро (200 за 1.4с), а в реальном синтезе
-    // тот же POST зависает — единственное отличие в реальном synthOne:
-    // xhr.responseType = 'arraybuffer' (нужен для получения бинарного
-    // mp3). Проверяем POST с ТЕМ ЖЕ телом и с тем же responseType, чтобы
-    // изолировать именно эту переменную. Можно удалить после диагностики.
-    (function diagnosticResponseTypeReal() {
-        var WORKER_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
-        var testBody = JSON.stringify({ text: 'Тест', format: 'mp3', chunk_length: 300, latency: 'normal', reference_id: DEFAULT_REFERENCE_ID });
-        function run(label, responseType) {
-            var startedAt = Date.now();
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', WORKER_URL, true);
-            if (responseType) xhr.responseType = responseType;
-            xhr.timeout = 15000;
-            console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю...');
-            xhr.onload = function () {
-                console.log(LOG_PREFIX, '[диагностика:' + label + '] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
-            };
-            xhr.onerror = function () {
-                console.warn(LOG_PREFIX, '[диагностика:' + label + '] ОШИБКА за', Date.now() - startedAt, 'мс');
-            };
-            xhr.ontimeout = function () {
-                console.warn(LOG_PREFIX, '[диагностика:' + label + '] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
-            };
-            xhr.send(testBody);
-        }
-        run('POST-text-responseType', '');
-        run('POST-arraybuffer-responseType', 'arraybuffer');
-    })();
 
     // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
