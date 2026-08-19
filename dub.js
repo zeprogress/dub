@@ -140,6 +140,7 @@
     var DUCKING_CHECK_MS = 120;    // как часто проверять окна приглушения (чаще, чем общий tick — иначе короткие/наложенные реплики проваливаются между замерами раз в секунду)
     var SUB_FETCH_TIMEOUT_MS = 120000; // сколько ждать субтитры от TorrServer на холодном торренте
     var SEEK_SETTLE_MS = 1500;     // сколько ждать после перемотки, пока currentTime не перестанет скакать
+    var TTS_FETCH_TIMEOUT_MS = 20000; // сколько ждать ответа от TTS-прокси, прежде чем считать запрос зависшим
 
     // Плавно меняет громкость САМОГО <video> (не через Lampa.PlayerVideo.volume() —
     // та ещё и сохраняет значение как пользовательскую настройку громкости в
@@ -344,13 +345,30 @@
             if (speed && speed !== 1) body.prosody.speed = Math.max(0.5, Math.min(2.0, speed));
             if (volumeCorrection) body.prosody.volume = Math.max(-20, Math.min(20, volumeCorrection));
         }
+        // На части Android-устройств (TV-приставки и т.п.) запрос к
+        // fish-tts-proxy иногда просто зависает — не приходит ни успеха,
+        // ни ошибки, fetch() висит бесконечно (без видимых причин в
+        // логах: не CORS, не сетевая ошибка — просто тишина). Без
+        // таймаута такая реплика оставалась бы в 'loading' навсегда, и
+        // ничего никогда не озвучивалось бы, хотя по логам "всё шло".
+        var abortController = new AbortController();
+        var timeoutTimer = setTimeout(function () {
+            console.warn(LOG_PREFIX, 'запрос к TTS-прокси завис (' + (TTS_FETCH_TIMEOUT_MS / 1000) + 'с без ответа), обрываю:', JSON.stringify(text));
+            abortController.abort();
+        }, TTS_FETCH_TIMEOUT_MS);
+
         return fetch(TTS_PROXY_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: abortController.signal
         }).then(function (resp) {
+            clearTimeout(timeoutTimer);
             if (!resp.ok) throw new Error('TTS proxy HTTP ' + resp.status);
             return resp.arrayBuffer();
+        }).catch(function (err) {
+            clearTimeout(timeoutTimer);
+            throw err;
         });
     }
 
