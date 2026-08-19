@@ -46,7 +46,16 @@
     // fetch(), не в сети/прокси на устройстве, поэтому синтез специально
     // переведён на XMLHttpRequest, и внешний прокси снова используется
     // напрямую (никакого локального сервера на Mac не нужно).
-    var TTS_PROXY_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
+    // На этом Android TV (MiTV, Android 9) оба доступных в самом
+    // приложении Lampa движка — Chrome 66 (2018) и Crosswalk/Chrome 53
+    // (2016), системный WebView не обновляется — не могут стабильно
+    // держать TLS с Cloudflare: POST/GET, с параметрами/без, с preflight/
+    // без — каждый раз всё равно виснет на handshake. Единственное
+    // стабильно рабочее — обычный http (без шифрования вообще) к
+    // локальному прокси на Mac (Dub/local_tts_proxy.py, тот же LAN, что
+    // и TorrServer) — он должен быть запущен на Mac одновременно с
+    // просмотром. Если IP Mac в сети сменится — нужно обновить этот адрес.
+    var TTS_PROXY_URL = 'http://192.168.0.132:8091/';
 
     var VOICES = {
         'c4ec5839e2044150aad40ac193a602f1': 'Володарский',
@@ -337,22 +346,25 @@
     // Fish Audio TTS: одна реплика за один POST-запрос
     // ---------------------------------------------------------------
     function synthOne(text, referenceId, speed) {
+        var body = {
+            text: text,
+            format: 'mp3',
+            chunk_length: 300,
+            latency: 'normal',
+            reference_id: referenceId
+        };
         var volumeCorrection = VOICE_VOLUME_CORRECTION[referenceId] || 0;
-        // На одном Android TV POST-запросы (и через fetch, и через XHR, с
-        // телом любой формы — JSON, с preflight и без) зависали к ЛЮБОМУ
-        // внешнему хосту без единой ошибки, а обычный внешний GET отвечал
-        // быстро и нормально (проверено отдельным диагностическим тестом
-        // прямо на нашем же воркере: GET -> 405 за 491мс). Поэтому синтез
-        // идёт через GET с параметрами в query-строке — воркер сам,
-        // получив их, собирает обычный POST-запрос к Fish Audio уже НЕ из
-        // этого WebView, так что там это ограничение не действует.
-        var params = 'text=' + encodeURIComponent(text) + '&reference_id=' + encodeURIComponent(referenceId);
-        if (speed && speed !== 1) params += '&speed=' + encodeURIComponent(Math.max(0.5, Math.min(2.0, speed)));
-        if (volumeCorrection) params += '&volume=' + encodeURIComponent(Math.max(-20, Math.min(20, volumeCorrection)));
-
+        if ((speed && speed !== 1) || volumeCorrection) {
+            body.prosody = {};
+            if (speed && speed !== 1) body.prosody.speed = Math.max(0.5, Math.min(2.0, speed));
+            if (volumeCorrection) body.prosody.volume = Math.max(-20, Math.min(20, volumeCorrection));
+        }
+        // Локальный прокси (обычный http, тот же LAN, что и TorrServer) —
+        // POST с телом тут не проблема, зависания были именно из-за TLS
+        // к внешним HTTPS-хостам на этом устройстве, не из-за формы запроса.
         return new Promise(function (resolve, reject) {
             var xhr = new XMLHttpRequest();
-            xhr.open('GET', TTS_PROXY_URL + '?' + params, true);
+            xhr.open('POST', TTS_PROXY_URL, true);
             xhr.responseType = 'arraybuffer';
             xhr.timeout = TTS_FETCH_TIMEOUT_MS;
             xhr.onload = function () {
@@ -364,7 +376,7 @@
                 console.warn(LOG_PREFIX, 'запрос к TTS-прокси завис (' + (TTS_FETCH_TIMEOUT_MS / 1000) + 'с без ответа), обрываю:', JSON.stringify(text));
                 reject(new Error('TTS proxy XHR timeout'));
             };
-            xhr.send();
+            xhr.send(JSON.stringify(body));
         });
     }
 
@@ -919,23 +931,21 @@
     }, 2000);
 
     // -----------------------------------------------------------------
-    // ВРЕМЕННЫЙ диагностический тест (см. чат): GET с параметрами к
-    // синтезу зависает, а голый GET без параметров/тела (тот же URL)
-    // отвечал быстро (405 за 491мс). Разница ещё и в responseType —
-    // реальный синтез использует 'arraybuffer', диагностика использовала
-    // дефолтный (текстовый). Проверяем оба варианта параллельно на
-    // одном и том же реальном запросе синтеза, чтобы понять, в чём
-    // именно затык — в параметрах или в responseType. Можно удалить
+    // ВРЕМЕННЫЙ диагностический тест (см. чат): GET к workers.dev проходит
+    // полное TLS-рукопожатие и отвечает быстро — значит дело не в TLS, а
+    // в чём-то специфичном для самого POST. Проверяем POST с ПУСТЫМ телом
+    // и POST с телом обычного размера — если зависает даже пустой, дело
+    // в самом методе/протоколе (например, баг в обработке тела запроса
+    // по HTTP/2 в этом древнем движке), а не в содержимом. Можно удалить
     // после диагностики.
-    (function diagnosticResponseType() {
-        var testUrl = TTS_PROXY_URL + '?text=' + encodeURIComponent('Тест') + '&reference_id=' + DEFAULT_REFERENCE_ID;
-        function run(label, responseType) {
+    (function diagnosticPostBody() {
+        var WORKER_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
+        function run(label, body) {
             var startedAt = Date.now();
             var xhr = new XMLHttpRequest();
-            xhr.open('GET', testUrl, true);
-            if (responseType) xhr.responseType = responseType;
+            xhr.open('POST', WORKER_URL, true);
             xhr.timeout = 15000;
-            console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю...');
+            console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю, размер тела:', body ? body.length : 0, 'байт...');
             xhr.onload = function () {
                 console.log(LOG_PREFIX, '[диагностика:' + label + '] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
             };
@@ -945,10 +955,10 @@
             xhr.ontimeout = function () {
                 console.warn(LOG_PREFIX, '[диагностика:' + label + '] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
             };
-            xhr.send();
+            xhr.send(body);
         }
-        run('GET+params/text', '');
-        run('GET+params/arraybuffer', 'arraybuffer');
+        run('POST-empty', null);
+        run('POST-small', JSON.stringify({ text: 'Тест', reference_id: DEFAULT_REFERENCE_ID }));
     })();
 
     // -----------------------------------------------------------------
