@@ -41,17 +41,12 @@
 
     var LOG_PREFIX = '[ai-dub2]';
 
-    // На одном Android TV выяснилось, что fetch() из страницы вообще не
-    // может достучаться ни до какого ВНЕШНЕГО хоста (ни до нашего
-    // Cloudflare Worker, ни даже до постороннего https://httpbin.org —
-    // оба варианта, и http и https, зависали без единой ошибки), при
-    // этом до локальной сети (TorrServer) fetch() достаёт нормально.
-    // Похоже на сетевую песочницу самого APK. Поэтому вместо внешнего
-    // прокси используем локальный (Dub/local_tts_proxy.py, тот же LAN,
-    // что и TorrServer) — он должен быть запущен на Mac одновременно с
-    // просмотром, как и TorrServer. Если IP Mac в сети сменится — нужно
-    // обновить этот адрес.
-    var TTS_PROXY_URL = 'http://192.168.0.132:8091/';
+    // На одном Android TV обычный fetch() к внешним хостам зависал без
+    // ошибок (см. комментарий в synthOne) — проблема оказалась именно в
+    // fetch(), не в сети/прокси на устройстве, поэтому синтез специально
+    // переведён на XMLHttpRequest, и внешний прокси снова используется
+    // напрямую (никакого локального сервера на Mac не нужно).
+    var TTS_PROXY_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
 
     var VOICES = {
         'c4ec5839e2044150aad40ac193a602f1': 'Володарский',
@@ -355,30 +350,30 @@
             if (speed && speed !== 1) body.prosody.speed = Math.max(0.5, Math.min(2.0, speed));
             if (volumeCorrection) body.prosody.volume = Math.max(-20, Math.min(20, volumeCorrection));
         }
-        // На части Android-устройств (TV-приставки и т.п.) запрос к
-        // fish-tts-proxy иногда просто зависает — не приходит ни успеха,
-        // ни ошибки, fetch() висит бесконечно (без видимых причин в
-        // логах: не CORS, не сетевая ошибка — просто тишина). Без
-        // таймаута такая реплика оставалась бы в 'loading' навсегда, и
-        // ничего никогда не озвучивалось бы, хотя по логам "всё шло".
-        var abortController = new AbortController();
-        var timeoutTimer = setTimeout(function () {
-            console.warn(LOG_PREFIX, 'запрос к TTS-прокси завис (' + (TTS_FETCH_TIMEOUT_MS / 1000) + 'с без ответа), обрываю:', JSON.stringify(text));
-            abortController.abort();
-        }, TTS_FETCH_TIMEOUT_MS);
-
-        return fetch(TTS_PROXY_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: abortController.signal
-        }).then(function (resp) {
-            clearTimeout(timeoutTimer);
-            if (!resp.ok) throw new Error('TTS proxy HTTP ' + resp.status);
-            return resp.arrayBuffer();
-        }).catch(function (err) {
-            clearTimeout(timeoutTimer);
-            throw err;
+        // На одном Android TV обычный fetch() к ЛЮБОМУ внешнему хосту
+        // зависал без единой ошибки (проверено на двух не связанных
+        // друг с другом доменах, http и https) — при этом сама Lampa
+        // (постеры, метаданные, торрент-трекеры) внешний интернет видит
+        // прекрасно, судя по её собственным логам вида "[Request] GET
+        // ...", которые указывают на XMLHttpRequest, а не fetch(). Похоже,
+        // именно fetch() в этой сборке WebView урезан/сломан для внешних
+        // адресов, а XMLHttpRequest — нет. Поэтому синтез идёт через XHR.
+        return new Promise(function (resolve, reject) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', TTS_PROXY_URL, true);
+            xhr.responseType = 'arraybuffer';
+            xhr.timeout = TTS_FETCH_TIMEOUT_MS;
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.onload = function () {
+                if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
+                else reject(new Error('TTS proxy HTTP ' + xhr.status));
+            };
+            xhr.onerror = function () { reject(new Error('TTS proxy XHR network error')); };
+            xhr.ontimeout = function () {
+                console.warn(LOG_PREFIX, 'запрос к TTS-прокси завис (' + (TTS_FETCH_TIMEOUT_MS / 1000) + 'с без ответа), обрываю:', JSON.stringify(text));
+                reject(new Error('TTS proxy XHR timeout'));
+            };
+            xhr.send(JSON.stringify(body));
         });
     }
 
