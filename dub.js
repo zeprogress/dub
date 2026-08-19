@@ -925,6 +925,38 @@
     }, 2000);
 
     // -----------------------------------------------------------------
+    // ВРЕМЕННЫЙ диагностический тест (см. чат): POST с реальным телом на
+    // отдельном тесте отвечал быстро (200 за 1.4с), а в реальном синтезе
+    // тот же POST зависает — единственное отличие в реальном synthOne:
+    // xhr.responseType = 'arraybuffer' (нужен для получения бинарного
+    // mp3). Проверяем POST с ТЕМ ЖЕ телом и с тем же responseType, чтобы
+    // изолировать именно эту переменную. Можно удалить после диагностики.
+    (function diagnosticResponseTypeReal() {
+        var WORKER_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
+        var testBody = JSON.stringify({ text: 'Тест', format: 'mp3', chunk_length: 300, latency: 'normal', reference_id: DEFAULT_REFERENCE_ID });
+        function run(label, responseType) {
+            var startedAt = Date.now();
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', WORKER_URL, true);
+            if (responseType) xhr.responseType = responseType;
+            xhr.timeout = 15000;
+            console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю...');
+            xhr.onload = function () {
+                console.log(LOG_PREFIX, '[диагностика:' + label + '] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
+            };
+            xhr.onerror = function () {
+                console.warn(LOG_PREFIX, '[диагностика:' + label + '] ОШИБКА за', Date.now() - startedAt, 'мс');
+            };
+            xhr.ontimeout = function () {
+                console.warn(LOG_PREFIX, '[диагностика:' + label + '] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
+            };
+            xhr.send(testBody);
+        }
+        run('POST-text-responseType', '');
+        run('POST-arraybuffer-responseType', 'arraybuffer');
+    })();
+
+    // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
     // В отличие от полноценного Chrome, многие WebView-движки требуют
     // ПРЯМОГО пользовательского жеста (тап/клик/нажатие пульта), чтобы
