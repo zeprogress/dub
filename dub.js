@@ -41,7 +41,17 @@
 
     var LOG_PREFIX = '[ai-dub2]';
 
-    var TTS_PROXY_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
+    // На одном Android TV выяснилось, что fetch() из страницы вообще не
+    // может достучаться ни до какого ВНЕШНЕГО хоста (ни до нашего
+    // Cloudflare Worker, ни даже до постороннего https://httpbin.org —
+    // оба варианта, и http и https, зависали без единой ошибки), при
+    // этом до локальной сети (TorrServer) fetch() достаёт нормально.
+    // Похоже на сетевую песочницу самого APK. Поэтому вместо внешнего
+    // прокси используем локальный (Dub/local_tts_proxy.py, тот же LAN,
+    // что и TorrServer) — он должен быть запущен на Mac одновременно с
+    // просмотром, как и TorrServer. Если IP Mac в сети сменится — нужно
+    // обновить этот адрес.
+    var TTS_PROXY_URL = 'http://192.168.0.132:8091/';
 
     var VOICES = {
         'c4ec5839e2044150aad40ac193a602f1': 'Володарский',
@@ -914,40 +924,6 @@
         console.log(LOG_PREFIX, 'обнаружил смену видео без события player-start (похоже на автопереход к следующей серии):', src);
         handleVideoSource(src, null);
     }, 2000);
-
-    // -----------------------------------------------------------------
-    // ВРЕМЕННЫЙ диагностический тест (см. чат): на одном Android TV все
-    // POST-запросы к fish-tts-proxy.player2vr.workers.dev виснут ровно
-    // на весь таймаут без единой ошибки — непонятно, специфично это для
-    // Cloudflare Workers или для внешних HTTPS-запросов вообще на этом
-    // устройстве. Тихо, в фоне, не мешая реальной озвучке, пингуем
-    // httpbin.org (не Cloudflare) тем же методом (POST, JSON, HTTPS) и
-    // логируем результат — не влияет на работу плагина, можно удалить
-    // после диагностики.
-    function diagnosticPing(label, url) {
-        var startedAt = Date.now();
-        var ac = new AbortController();
-        var t = setTimeout(function () { ac.abort(); }, 15000);
-        console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю тестовый POST на', url, '...');
-        fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ping: true }),
-            signal: ac.signal
-        }).then(function (r) {
-            clearTimeout(t);
-            console.log(LOG_PREFIX, '[диагностика:' + label + '] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', r.status);
-        }).catch(function (err) {
-            clearTimeout(t);
-            console.warn(LOG_PREFIX, '[диагностика:' + label + '] НЕ ОТВЕТИЛ за', Date.now() - startedAt, 'мс (' + (err && err.name) + ')');
-        });
-    }
-    // https vs http на одном и том же внешнем хосте — если http (без
-    // шифрования) отвечает, а https виснет, дело в TLS-стеке WebView;
-    // если виснут оба — дело не в TLS, а во внешних соединениях вообще
-    // (DNS/маршрутизация/файрвол на уровне устройства или сети).
-    diagnosticPing('https', 'https://httpbin.org/post');
-    diagnosticPing('http', 'http://httpbin.org/post');
 
     // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
