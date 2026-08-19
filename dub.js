@@ -924,24 +924,30 @@
     // httpbin.org (не Cloudflare) тем же методом (POST, JSON, HTTPS) и
     // логируем результат — не влияет на работу плагина, можно удалить
     // после диагностики.
-    (function diagnosticPing() {
+    function diagnosticPing(label, url) {
         var startedAt = Date.now();
         var ac = new AbortController();
         var t = setTimeout(function () { ac.abort(); }, 15000);
-        console.log(LOG_PREFIX, '[диагностика] шлю тестовый POST на httpbin.org (не Cloudflare)...');
-        fetch('https://httpbin.org/post', {
+        console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю тестовый POST на', url, '...');
+        fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ping: true }),
             signal: ac.signal
         }).then(function (r) {
             clearTimeout(t);
-            console.log(LOG_PREFIX, '[диагностика] httpbin.org ответил за', Date.now() - startedAt, 'мс, статус:', r.status, '— значит внешние HTTPS POST-запросы на этом устройстве в принципе работают, проблема именно в workers.dev');
+            console.log(LOG_PREFIX, '[диагностика:' + label + '] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', r.status);
         }).catch(function (err) {
             clearTimeout(t);
-            console.warn(LOG_PREFIX, '[диагностика] httpbin.org тоже не ответил за', Date.now() - startedAt, 'мс (' + (err && err.name) + ') — значит дело не конкретно в workers.dev, а во внешних HTTPS-запросах вообще на этом устройстве/сети');
+            console.warn(LOG_PREFIX, '[диагностика:' + label + '] НЕ ОТВЕТИЛ за', Date.now() - startedAt, 'мс (' + (err && err.name) + ')');
         });
-    })();
+    }
+    // https vs http на одном и том же внешнем хосте — если http (без
+    // шифрования) отвечает, а https виснет, дело в TLS-стеке WebView;
+    // если виснут оба — дело не в TLS, а во внешних соединениях вообще
+    // (DNS/маршрутизация/файрвол на уровне устройства или сети).
+    diagnosticPing('https', 'https://httpbin.org/post');
+    diagnosticPing('http', 'http://httpbin.org/post');
 
     // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
