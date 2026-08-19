@@ -673,6 +673,7 @@
             // ненадёжны, раз Lampa пересоздаёт <video> в процессе запуска.
             var liveVideo = Lampa.PlayerVideo.video() || video;
             var controller = new DubController(liveVideo, cues);
+            console.log(LOG_PREFIX, 'AudioContext создан, состояние:', controller.ctx.state, '(если "suspended" не сменится на "running" сам по себе — должен помочь любой тап/клик, см. разблокировку по жесту)');
             var timer = setInterval(function () { controller.tick(); }, 1000);
             // приглушение — отдельным частым таймером, а не общим 1-секундным
             // tick(): короткие/наложенные реплики иначе проваливались между
@@ -895,6 +896,30 @@
         console.log(LOG_PREFIX, 'обнаружил смену видео без события player-start (похоже на автопереход к следующей серии):', src);
         handleVideoSource(src, null);
     }, 2000);
+
+    // -----------------------------------------------------------------
+    // Разблокировка AudioContext в WebView (Android-приложение Lampa).
+    // В отличие от полноценного Chrome, многие WebView-движки требуют
+    // ПРЯМОГО пользовательского жеста (тап/клик/нажатие пульта), чтобы
+    // AudioContext реально перешёл в running — иначе он тихо остаётся
+    // suspended, и звук физически не идёт, хотя вся остальная логика
+    // (синтез, планирование через ctx.currentTime) отрабатывает как ни
+    // в чём не бывало и в логах всё выглядит нормально. Обычный resume()
+    // из таймера/промиса (как в updateDucking/tick) в WebView может не
+    // сработать — нужен resume() именно ИЗНУТРИ обработчика жеста.
+    // -----------------------------------------------------------------
+    ['click', 'touchend', 'keydown'].forEach(function (evt) {
+        document.addEventListener(evt, function () {
+            if (current && current.controller && current.controller.ctx && current.controller.ctx.state !== 'running') {
+                console.log(LOG_PREFIX, 'жест пользователя (' + evt + '), пробую разблокировать AudioContext, было:', current.controller.ctx.state);
+                current.controller.ctx.resume().then(function () {
+                    console.log(LOG_PREFIX, 'AudioContext теперь:', current.controller.ctx.state);
+                }).catch(function (err) {
+                    console.warn(LOG_PREFIX, 'не удалось разблокировать AudioContext', err);
+                });
+            }
+        }, true);
+    });
 
     console.log(LOG_PREFIX, 'плагин v2.0 загружен');
 })();
