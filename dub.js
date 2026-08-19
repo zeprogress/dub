@@ -363,7 +363,15 @@
             xhr.open('POST', TTS_PROXY_URL, true);
             xhr.responseType = 'arraybuffer';
             xhr.timeout = TTS_FETCH_TIMEOUT_MS;
-            xhr.setRequestHeader('Content-Type', 'application/json');
+            // БЕЗ явного Content-Type: 'application/json' — этот заголовок
+            // делает запрос "непростым" для CORS и заставляет браузер
+            // сначала слать служебный preflight (OPTIONS). Похоже, именно
+            // на preflight и виснет эта сборка WebView (обычный GET, у
+            // которого преflight не требуется, отвечает быстро). Без
+            // явного Content-Type XHR подставит text/plain сам — запрос
+            // становится "простым", preflight не нужен. Наш Worker тело
+            // всё равно читает как есть и парсит JSON, что бы клиент ни
+            // объявил в заголовке.
             xhr.onload = function () {
                 if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
                 else reject(new Error('TTS proxy HTTP ' + xhr.status));
@@ -919,49 +927,6 @@
         console.log(LOG_PREFIX, 'обнаружил смену видео без события player-start (похоже на автопереход к следующей серии):', src);
         handleVideoSource(src, null);
     }, 2000);
-
-    // -----------------------------------------------------------------
-    // ВРЕМЕННЫЙ диагностический тест (см. чат): и fetch(), и XHR к
-    // внешнему TTS-прокси зависают на этом Android TV, но сама Lampa
-    // явно достаёт внешние GET (лог "[Mirrors] first check: https://
-    // cub.rip status: true") — подозрение, что виснут именно POST+JSON
-    // к внешним хостам, а обычный GET работает. Проверяем внешний GET
-    // и через fetch, и через XHR, не трогая реальную озвучку. Можно
-    // удалить после диагностики.
-    (function diagnosticGet() {
-        function viaFetch() {
-            var startedAt = Date.now();
-            var ac = new AbortController();
-            var t = setTimeout(function () { ac.abort(); }, 15000);
-            console.log(LOG_PREFIX, '[диагностика:GET/fetch] шлю...');
-            fetch('https://httpbin.org/get', { signal: ac.signal }).then(function (r) {
-                clearTimeout(t);
-                console.log(LOG_PREFIX, '[диагностика:GET/fetch] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', r.status);
-            }).catch(function (err) {
-                clearTimeout(t);
-                console.warn(LOG_PREFIX, '[диагностика:GET/fetch] НЕ ОТВЕТИЛ за', Date.now() - startedAt, 'мс (' + (err && err.name) + ')');
-            });
-        }
-        function viaXhr() {
-            var startedAt = Date.now();
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', 'https://httpbin.org/get', true);
-            xhr.timeout = 15000;
-            console.log(LOG_PREFIX, '[диагностика:GET/xhr] шлю...');
-            xhr.onload = function () {
-                console.log(LOG_PREFIX, '[диагностика:GET/xhr] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
-            };
-            xhr.onerror = function () {
-                console.warn(LOG_PREFIX, '[диагностика:GET/xhr] ОШИБКА за', Date.now() - startedAt, 'мс');
-            };
-            xhr.ontimeout = function () {
-                console.warn(LOG_PREFIX, '[диагностика:GET/xhr] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
-            };
-            xhr.send();
-        }
-        viaFetch();
-        viaXhr();
-    })();
 
     // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
