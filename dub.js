@@ -935,19 +935,29 @@
     // виснет и он, дело в домене workers.dev целиком, а не в форме
     // запроса. Можно удалить после диагностики.
     (function diagnosticWorkerGet() {
+        function report(text) {
+            console.log(LOG_PREFIX, '[диагностика:workers.dev/GET]', text);
+            // отдельно ещё и всплывающим уведомлением — лог на этом ТВ
+            // обрезается по количеству строк, и диагностическую запись
+            // выталкивает шумом от обычных попыток синтеза раньше, чем
+            // её успевают найти
+            if (window.Lampa && Lampa.Noty && Lampa.Noty.show) {
+                Lampa.Noty.show('[ai-dub2 диагностика] ' + text);
+            }
+        }
         var startedAt = Date.now();
         var xhr = new XMLHttpRequest();
         xhr.open('GET', TTS_PROXY_URL, true);
         xhr.timeout = 15000;
-        console.log(LOG_PREFIX, '[диагностика:workers.dev/GET] шлю...');
+        report('шлю GET на ' + TTS_PROXY_URL + '...');
         xhr.onload = function () {
-            console.log(LOG_PREFIX, '[диагностика:workers.dev/GET] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
+            report('ОТВЕТИЛ за ' + (Date.now() - startedAt) + 'мс, статус: ' + xhr.status);
         };
         xhr.onerror = function () {
-            console.warn(LOG_PREFIX, '[диагностика:workers.dev/GET] ОШИБКА за', Date.now() - startedAt, 'мс');
+            report('ОШИБКА за ' + (Date.now() - startedAt) + 'мс');
         };
         xhr.ontimeout = function () {
-            console.warn(LOG_PREFIX, '[диагностика:workers.dev/GET] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
+            report('НЕ ОТВЕТИЛ (таймаут) за ' + (Date.now() - startedAt) + 'мс');
         };
         xhr.send();
     })();
