@@ -869,7 +869,14 @@
                 if (item.open_characters) { openCharacterMenu(); return; }
                 if (item.open_voice) { openVoiceListFor(applyVoiceChange, getReferenceId()); return; }
             },
-            onBack: function () {}
+            onBack: function () {
+                // Select сам закрывается, но фокус пульта/клавиатуры после
+                // этого нужно явно вернуть панели плеера — иначе он
+                // повисает в никуда, и управление плеером "замерзает"
+                // (баг, о котором сообщили: после Select.show() и нажатия
+                // "назад" ничего больше не реагирует на пульт).
+                try { Lampa.Controller.toggle('player_panel'); } catch (e) {}
+            }
         });
     }
 
