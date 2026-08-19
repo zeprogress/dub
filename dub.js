@@ -42,14 +42,13 @@
     var LOG_PREFIX = '[ai-dub2]';
 
     // На одном Android TV (MiTV, Android 9, движки Chrome 66/2018 и
-    // Crosswalk/Chrome 53/2016) обычный fetch() к внешним хостам зависал
-    // без ошибок; переход на XMLHttpRequest тоже поначалу не спасал.
-    // Диагностика по шагам показала: GET проходит TLS и отвечает быстро,
-    // POST с ПУСТЫМ телом зависает, а POST с настоящим содержимым (как в
-    // реальном синтезе) — отвечает нормально (200 за ~1.4с). Значит
-    // внешний Cloudflare Worker-прокси по HTTPS работает и на этом
-    // устройстве, локальный сервер оказался не нужен.
-    var TTS_PROXY_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
+    // Crosswalk/Chrome 53/2016) POST-запросы к Cloudflare Worker-прокси
+    // виснут НЕДЕТЕРМИНИРОВАННО — тот же самый запрос то отвечает за
+    // 1.4с, то виснет на 20с (похоже на нестабильность переиспользования
+    // TCP/TLS-соединений в древнем движке именно с Cloudflare edge).
+    // Пробуем ту же логику на другой инфраструктуре — Netlify Functions
+    // вместо Cloudflare Workers — вдруг там стабильнее.
+    var TTS_PROXY_URL = 'https://rainbow-centaur-8633c6.netlify.app/tts';
 
     var VOICES = {
         'c4ec5839e2044150aad40ac193a602f1': 'Володарский',
