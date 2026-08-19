@@ -919,6 +919,39 @@
     }, 2000);
 
     // -----------------------------------------------------------------
+    // ВРЕМЕННЫЙ диагностический тест (см. чат): GET с параметрами к
+    // синтезу зависает, а голый GET без параметров/тела (тот же URL)
+    // отвечал быстро (405 за 491мс). Разница ещё и в responseType —
+    // реальный синтез использует 'arraybuffer', диагностика использовала
+    // дефолтный (текстовый). Проверяем оба варианта параллельно на
+    // одном и том же реальном запросе синтеза, чтобы понять, в чём
+    // именно затык — в параметрах или в responseType. Можно удалить
+    // после диагностики.
+    (function diagnosticResponseType() {
+        var testUrl = TTS_PROXY_URL + '?text=' + encodeURIComponent('Тест') + '&reference_id=' + DEFAULT_REFERENCE_ID;
+        function run(label, responseType) {
+            var startedAt = Date.now();
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', testUrl, true);
+            if (responseType) xhr.responseType = responseType;
+            xhr.timeout = 15000;
+            console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю...');
+            xhr.onload = function () {
+                console.log(LOG_PREFIX, '[диагностика:' + label + '] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
+            };
+            xhr.onerror = function () {
+                console.warn(LOG_PREFIX, '[диагностика:' + label + '] ОШИБКА за', Date.now() - startedAt, 'мс');
+            };
+            xhr.ontimeout = function () {
+                console.warn(LOG_PREFIX, '[диагностика:' + label + '] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
+            };
+            xhr.send();
+        }
+        run('GET+params/text', '');
+        run('GET+params/arraybuffer', 'arraybuffer');
+    })();
+
+    // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
     // В отличие от полноценного Chrome, многие WebView-движки требуют
     // ПРЯМОГО пользовательского жеста (тап/клик/нажатие пульта), чтобы
