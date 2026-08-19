@@ -41,21 +41,15 @@
 
     var LOG_PREFIX = '[ai-dub2]';
 
-    // На одном Android TV обычный fetch() к внешним хостам зависал без
-    // ошибок (см. комментарий в synthOne) — проблема оказалась именно в
-    // fetch(), не в сети/прокси на устройстве, поэтому синтез специально
-    // переведён на XMLHttpRequest, и внешний прокси снова используется
-    // напрямую (никакого локального сервера на Mac не нужно).
-    // На этом Android TV (MiTV, Android 9) оба доступных в самом
-    // приложении Lampa движка — Chrome 66 (2018) и Crosswalk/Chrome 53
-    // (2016), системный WebView не обновляется — не могут стабильно
-    // держать TLS с Cloudflare: POST/GET, с параметрами/без, с preflight/
-    // без — каждый раз всё равно виснет на handshake. Единственное
-    // стабильно рабочее — обычный http (без шифрования вообще) к
-    // локальному прокси на Mac (Dub/local_tts_proxy.py, тот же LAN, что
-    // и TorrServer) — он должен быть запущен на Mac одновременно с
-    // просмотром. Если IP Mac в сети сменится — нужно обновить этот адрес.
-    var TTS_PROXY_URL = 'http://192.168.0.132:8091/';
+    // На одном Android TV (MiTV, Android 9, движки Chrome 66/2018 и
+    // Crosswalk/Chrome 53/2016) обычный fetch() к внешним хостам зависал
+    // без ошибок; переход на XMLHttpRequest тоже поначалу не спасал.
+    // Диагностика по шагам показала: GET проходит TLS и отвечает быстро,
+    // POST с ПУСТЫМ телом зависает, а POST с настоящим содержимым (как в
+    // реальном синтезе) — отвечает нормально (200 за ~1.4с). Значит
+    // внешний Cloudflare Worker-прокси по HTTPS работает и на этом
+    // устройстве, локальный сервер оказался не нужен.
+    var TTS_PROXY_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
 
     var VOICES = {
         'c4ec5839e2044150aad40ac193a602f1': 'Володарский',
@@ -929,37 +923,6 @@
         console.log(LOG_PREFIX, 'обнаружил смену видео без события player-start (похоже на автопереход к следующей серии):', src);
         handleVideoSource(src, null);
     }, 2000);
-
-    // -----------------------------------------------------------------
-    // ВРЕМЕННЫЙ диагностический тест (см. чат): GET к workers.dev проходит
-    // полное TLS-рукопожатие и отвечает быстро — значит дело не в TLS, а
-    // в чём-то специфичном для самого POST. Проверяем POST с ПУСТЫМ телом
-    // и POST с телом обычного размера — если зависает даже пустой, дело
-    // в самом методе/протоколе (например, баг в обработке тела запроса
-    // по HTTP/2 в этом древнем движке), а не в содержимом. Можно удалить
-    // после диагностики.
-    (function diagnosticPostBody() {
-        var WORKER_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
-        function run(label, body) {
-            var startedAt = Date.now();
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', WORKER_URL, true);
-            xhr.timeout = 15000;
-            console.log(LOG_PREFIX, '[диагностика:' + label + '] шлю, размер тела:', body ? body.length : 0, 'байт...');
-            xhr.onload = function () {
-                console.log(LOG_PREFIX, '[диагностика:' + label + '] ОТВЕТИЛ за', Date.now() - startedAt, 'мс, статус:', xhr.status);
-            };
-            xhr.onerror = function () {
-                console.warn(LOG_PREFIX, '[диагностика:' + label + '] ОШИБКА за', Date.now() - startedAt, 'мс');
-            };
-            xhr.ontimeout = function () {
-                console.warn(LOG_PREFIX, '[диагностика:' + label + '] НЕ ОТВЕТИЛ (таймаут) за', Date.now() - startedAt, 'мс');
-            };
-            xhr.send(body);
-        }
-        run('POST-empty', null);
-        run('POST-small', JSON.stringify({ text: 'Тест', reference_id: DEFAULT_REFERENCE_ID }));
-    })();
 
     // -----------------------------------------------------------------
     // Разблокировка AudioContext в WebView (Android-приложение Lampa).
