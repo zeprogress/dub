@@ -352,11 +352,14 @@
             reference_id: referenceId
         };
         var volumeCorrection = VOICE_VOLUME_CORRECTION[referenceId] || 0;
-        if ((speed && speed !== 1) || volumeCorrection) {
-            body.prosody = {};
-            if (speed && speed !== 1) body.prosody.speed = Math.max(0.5, Math.min(2.0, speed));
-            if (volumeCorrection) body.prosody.volume = Math.max(-20, Math.min(20, volumeCorrection));
-        }
+        // normalize_loudness у API и так true по умолчанию (не выключали
+        // ни разу, в т.ч. при замерах для VOICE_VOLUME_CORRECTION — она
+        // компенсирует остаточную разницу МЕЖДУ голосами уже поверх этой
+        // нормализации, а не вместо неё), но пропишем явно на случай, если
+        // Fish Audio когда-нибудь сменит дефолт.
+        body.prosody = { normalize_loudness: true };
+        if (speed && speed !== 1) body.prosody.speed = Math.max(0.5, Math.min(2.0, speed));
+        if (volumeCorrection) body.prosody.volume = Math.max(-20, Math.min(20, volumeCorrection));
         // Локальный прокси (обычный http, тот же LAN, что и TorrServer) —
         // POST с телом тут не проблема, зависания были именно из-за TLS
         // к внешним HTTPS-хостам на этом устройстве, не из-за формы запроса.
