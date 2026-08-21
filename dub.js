@@ -860,7 +860,13 @@
         Lampa.Select.show({
             title: 'Выбор голоса',
             items: items,
-            onSelect: function (item) { onPicked(item.id); },
+            onSelect: function (item) {
+                onPicked(item.id);
+                // выбор голоса закрывает Select точно так же, как и "назад" —
+                // без явного возврата фокуса панели плеера пульт зависает
+                // (см. комментарий у onBack в openRootMenu)
+                try { Lampa.Controller.toggle('player_panel'); } catch (e) {}
+            },
             onBack: function () { openRootMenu(); }
         });
     }
