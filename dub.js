@@ -42,13 +42,15 @@
     var LOG_PREFIX = '[ai-dub2]';
 
     // На одном Android TV (MiTV, Android 9, движки Chrome 66/2018 и
-    // Crosswalk/Chrome 53/2016) POST-запросы к Cloudflare Worker-прокси
-    // виснут НЕДЕТЕРМИНИРОВАННО — тот же самый запрос то отвечает за
-    // 1.4с, то виснет на 20с (похоже на нестабильность переиспользования
-    // TCP/TLS-соединений в древнем движке именно с Cloudflare edge).
-    // Пробуем ту же логику на другой инфраструктуре — Netlify Functions
-    // вместо Cloudflare Workers — вдруг там стабильнее.
-    var TTS_PROXY_URL = 'https://rainbow-centaur-8633c6.netlify.app/tts';
+    // Crosswalk/Chrome 53/2016) HTTPS-запросы к внешним хостам виснут
+    // НЕДЕТЕРМИНИРОВАННО (проверено на Cloudflare Workers и на Netlify
+    // Functions — одинаково нестабильно на обоих, значит дело не в
+    // конкретном облаке, а в TLS-стеке самого устройства). Cloudflare
+    // Workers, в отличие от Netlify, не форсируют редирект на https —
+    // отвечают и на чистый http (порт 80, без TLS вообще), а значит эту
+    // самую нестабильность полностью обходим, оставаясь на уже готовом
+    // воркере, без новой инфраструктуры.
+    var TTS_PROXY_URL = 'http://fish-tts-proxy.player2vr.workers.dev/';
 
     var VOICES = {
         'c4ec5839e2044150aad40ac193a602f1': 'Володарский',
