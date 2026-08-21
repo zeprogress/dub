@@ -41,16 +41,17 @@
 
     var LOG_PREFIX = '[ai-dub2]';
 
-    // На одном Android TV (MiTV, Android 9, движки Chrome 66/2018 и
-    // Crosswalk/Chrome 53/2016) HTTPS-запросы к внешним хостам виснут
-    // НЕДЕТЕРМИНИРОВАННО (проверено на Cloudflare Workers и на Netlify
-    // Functions — одинаково нестабильно на обоих, значит дело не в
-    // конкретном облаке, а в TLS-стеке самого устройства). Cloudflare
-    // Workers, в отличие от Netlify, не форсируют редирект на https —
-    // отвечают и на чистый http (порт 80, без TLS вообще), а значит эту
-    // самую нестабильность полностью обходим, оставаясь на уже готовом
-    // воркере, без новой инфраструктуры.
-    var TTS_PROXY_URL = 'http://fish-tts-proxy.player2vr.workers.dev/';
+    // Раньше здесь стоял чистый http (в обход подозреваемой нестабильности
+    // TLS-стека старого Android TV). Диагностика на десктопе вскрыла
+    // настоящую причину: Cloudflare Workers форсирует редирект http->https,
+    // и после такого редиректа браузер блокирует ответ по CORS
+    // ("Access-Control-Allow-Origin ... not equal to the supplied origin") —
+    // это не сетевое зависание, а стопроцентно воспроизводимая ошибка на
+    // КАЖДОМ запросе через http, просто проявлявшаяся как таймаут после
+    // исчерпания повторов. Раз сама Lampa открыта по http (не https),
+    // смешанного контента при обращении к https не будет — используем
+    // https напрямую, без промежуточного редиректа и его CORS-сбоя.
+    var TTS_PROXY_URL = 'https://fish-tts-proxy.player2vr.workers.dev/';
 
     var VOICES = {
         'c4ec5839e2044150aad40ac193a602f1': 'Володарский',
@@ -384,6 +385,7 @@
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
         this.state = cues.map(function () { return 'pending'; }); // pending|loading|ready|failed|played
         this.buffers = new Array(cues.length);
+        this.failedAt = new Array(cues.length);
         this.sources = [];
         this.destroyed = false;
         // видео и пауза/перемотка отслеживаются ОПРОСОМ в tick(), а не через
@@ -434,6 +436,14 @@
         return attempt(1);
     }
 
+    // Сеть на этом ТВ нестабильна, но не мертва — часть реплик проходит.
+    // Раньше неудача после SYNTH_RETRIES попыток теряла реплику навсегда;
+    // теперь 'failed' по истечении FAILED_RETRY_COOLDOWN_MS сбрасывается
+    // обратно в 'pending' и подхватывается tick()'ом заново, пока реплика
+    // ещё не прозвучала — так временные сетевые провалы со временем
+    // "рассасываются" за счёт повторных попыток.
+    var FAILED_RETRY_COOLDOWN_MS = 4000;
+
     DubController.prototype.ensureSynthesized = function (i) {
         var self = this;
         if (this.state[i] !== 'pending') return;
@@ -443,8 +453,10 @@
         console.log(LOG_PREFIX, 'синтезирую реплику', i, JSON.stringify(cue.text), 'голос:', VOICES[referenceId] || referenceId, cue.character ? '(' + cue.character + ')' : '');
 
         synthWithRetries(i, cue.text, referenceId, 1).then(function (buf) {
+            if (self.destroyed) return;
             console.log(LOG_PREFIX, 'реплика', i, 'получена от Fish Audio,', buf.byteLength, 'байт');
             return self.ctx.decodeAudioData(buf.slice(0)).then(function (audioBuf) {
+                if (self.destroyed) return;
                 var allowedMs = self.budgetMs(i) + OVERLAP_TOLERANCE_MS;
                 var synthMs = audioBuf.duration * 1000;
                 if (synthMs <= allowedMs) {
@@ -459,16 +471,20 @@
                 var speed = Math.min(MAX_SPEED, synthMs / allowedMs);
                 console.log(LOG_PREFIX, 'реплика', i, 'не укладывается (' + synthMs.toFixed(0) + 'мс из ' + allowedMs.toFixed(0) + 'мс), ускоряю в', speed.toFixed(2), 'раза' + (speed >= MAX_SPEED ? ' (потолок, останется небольшое наложение)' : ''));
                 return synthWithRetries(i, cue.text, referenceId, speed).then(function (buf2) {
+                    if (self.destroyed) return null;
                     return self.ctx.decodeAudioData(buf2.slice(0));
                 }).then(function (audioBuf2) {
+                    if (self.destroyed || !audioBuf2) return;
                     self.buffers[i] = audioBuf2;
                     self.state[i] = 'ready';
                     console.log(LOG_PREFIX, 'реплика', i, 'готова после ускорения');
                 });
             });
         }).catch(function (err) {
-            console.warn(LOG_PREFIX, 'ошибка синтеза реплики', i, cue.text, err);
+            if (self.destroyed) return;
+            console.warn(LOG_PREFIX, 'ошибка синтеза реплики', i, cue.text, err, '- попробую снова через', FAILED_RETRY_COOLDOWN_MS + 'мс');
             self.state[i] = 'failed';
+            self.failedAt[i] = Date.now();
         });
     };
 
@@ -622,6 +638,9 @@
         this.cues.forEach(function (cue, i) {
             if (cue.start_ms - nowVideoMs <= LOOKAHEAD_MS && cue.start_ms >= nowVideoMs - 2000) {
                 inWindow++;
+                if (self.state[i] === 'failed' && Date.now() - self.failedAt[i] >= FAILED_RETRY_COOLDOWN_MS) {
+                    self.state[i] = 'pending';
+                }
                 self.ensureSynthesized(i);
             }
         });
