@@ -900,18 +900,31 @@
             }
             return r.arrayBuffer().then(function (firstBuf) {
                 return readRange(totalSize - OS_HASH_CHUNK, totalSize - 1).then(function (lastBuf) {
-                    var MASK64 = (1n << 64n) - 1n;
-                    var hash = BigInt(totalSize) & MASK64;
+                    // 64-битная арифметика без BigInt — на случай старого WebView
+                    // без поддержки BigInt-литералов (`1n`), который иначе не
+                    // смог бы разобрать весь файл целиком (SyntaxError на этапе
+                    // парсинга ломает вообще всё, не только эту функцию — именно
+                    // так один раз сломался Dub Player). Храним хэш как пару
+                    // 32-битных половин и складываем с явным переносом — ровно
+                    // то же самое mod 2^64, что и BigInt.
+                    var lo = totalSize >>> 0, hi = 0; // размер видео всегда << 2^32
+                    function add64(addLo, addHi) {
+                        var newLo = lo + addLo;
+                        var carry = newLo > 0xFFFFFFFF ? 1 : 0;
+                        lo = newLo >>> 0;
+                        hi = (hi + addHi + carry) >>> 0;
+                    }
                     function sumChunk(buf) {
                         var view = new DataView(buf);
                         var words = Math.floor(buf.byteLength / 8);
                         for (var i = 0; i < words; i++) {
-                            hash = (hash + view.getBigUint64(i * 8, true)) & MASK64;
+                            add64(view.getUint32(i * 8, true), view.getUint32(i * 8 + 4, true));
                         }
                     }
                     sumChunk(firstBuf);
                     sumChunk(lastBuf);
-                    return { hash: hash.toString(16).padStart(16, '0'), size: totalSize };
+                    function hex8(n) { var s = (n >>> 0).toString(16); while (s.length < 8) s = '0' + s; return s; }
+                    return { hash: hex8(hi) + hex8(lo), size: totalSize };
                 });
             });
         });
