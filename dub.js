@@ -750,6 +750,40 @@
         current = null;
     }
 
+    // Общая часть между "субтитры по URL" (startDub) и "субтитры уже в виде
+    // текста" (startDubFromText — используется для найденных на OpenSubtitles,
+    // они приходят через наш прокси уже готовым текстом, без промежуточного URL).
+    function startDubFromText(subtitleLabel, text, myGeneration, video) {
+        if (myGeneration !== generation) {
+            console.log(LOG_PREFIX, 'этот запуск (#' + myGeneration + ') устарел, за это время стартовал #' + generation + ' — игнорирую результат');
+            return;
+        }
+        console.log(LOG_PREFIX, 'текст субтитров, длина:', text.length, 'превью:', JSON.stringify(text.slice(0, 200)));
+        var cues = parseSubtitles(subtitleLabel, text);
+        console.log(LOG_PREFIX, 'распознано реплик:', cues.length);
+        if (!cues.length) {
+            console.warn(LOG_PREFIX, 'субтитры пустые или не распознаны:', subtitleLabel);
+            return;
+        }
+        assignCharacterSlots(cues);
+        // ещё раз проверяем поколение — пока парсили, мог подоспеть новый старт
+        if (myGeneration !== generation) return;
+        // pause/play/перемотку контроллер отслеживает сам опросом в
+        // tick() (см. DubController) — DOM-события тут не нужны и
+        // ненадёжны, раз Lampa пересоздаёт <video> в процессе запуска.
+        var liveVideo = Lampa.PlayerVideo.video() || video;
+        var controller = new DubController(liveVideo, cues);
+        console.log(LOG_PREFIX, 'AudioContext создан, состояние:', controller.ctx.state, '(если "suspended" не сменится на "running" сам по себе — должен помочь любой тап/клик, см. разблокировку по жесту)');
+        var timer = setInterval(function () { controller.tick(); }, 1000);
+        // приглушение — отдельным частым таймером, а не общим 1-секундным
+        // tick(): короткие/наложенные реплики иначе проваливались между
+        // редкими замерами, и звук успевал прорваться на полную громкость
+        var duckTimer = setInterval(function () { controller.updateDucking(); }, DUCKING_CHECK_MS);
+        current = { controller: controller, timer: timer, duckTimer: duckTimer };
+        controller.tick();
+        controller.updateDucking();
+    }
+
     function startDub(subtitleUrl) {
         stopCurrent();
         var video = Lampa.PlayerVideo.video();
@@ -778,34 +812,7 @@
         }).then(function (text) {
             clearInterval(heartbeat);
             clearTimeout(timeoutTimer);
-            if (myGeneration !== generation) {
-                console.log(LOG_PREFIX, 'этот запуск (#' + myGeneration + ') устарел, за это время стартовал #' + generation + ' — игнорирую результат');
-                return;
-            }
-            console.log(LOG_PREFIX, 'текст субтитров, длина:', text.length, 'превью:', JSON.stringify(text.slice(0, 200)));
-            var cues = parseSubtitles(subtitleUrl, text);
-            console.log(LOG_PREFIX, 'распознано реплик:', cues.length);
-            if (!cues.length) {
-                console.warn(LOG_PREFIX, 'субтитры пустые или не распознаны:', subtitleUrl);
-                return;
-            }
-            assignCharacterSlots(cues);
-            // ещё раз проверяем поколение — пока парсили, мог подоспеть новый старт
-            if (myGeneration !== generation) return;
-            // pause/play/перемотку контроллер отслеживает сам опросом в
-            // tick() (см. DubController) — DOM-события тут не нужны и
-            // ненадёжны, раз Lampa пересоздаёт <video> в процессе запуска.
-            var liveVideo = Lampa.PlayerVideo.video() || video;
-            var controller = new DubController(liveVideo, cues);
-            console.log(LOG_PREFIX, 'AudioContext создан, состояние:', controller.ctx.state, '(если "suspended" не сменится на "running" сам по себе — должен помочь любой тап/клик, см. разблокировку по жесту)');
-            var timer = setInterval(function () { controller.tick(); }, 1000);
-            // приглушение — отдельным частым таймером, а не общим 1-секундным
-            // tick(): короткие/наложенные реплики иначе проваливались между
-            // редкими замерами, и звук успевал прорваться на полную громкость
-            var duckTimer = setInterval(function () { controller.updateDucking(); }, DUCKING_CHECK_MS);
-            current = { controller: controller, timer: timer, duckTimer: duckTimer };
-            controller.tick();
-            controller.updateDucking();
+            startDubFromText(subtitleUrl, text, myGeneration, video);
         }).catch(function (err) {
             clearInterval(heartbeat);
             clearTimeout(timeoutTimer);
@@ -866,6 +873,118 @@
         });
     }
 
+    // -----------------------------------------------------------------
+    // Запасной путь, когда в самой раздаче субтитров вообще нет: ищем на
+    // OpenSubtitles. Сперва по хэшу видеофайла (moviehash — точное
+    // совпадение с конкретным релизом независимо от кривого имени файла,
+    // так находятся даже малоизвестные тайтлы), и только если хэш ничего
+    // не дал — по текстовому запросу (разобранное имя файла).
+    // -----------------------------------------------------------------
+    var OPENSUBTITLES_PROXY_URL = 'http://zeprogut.beget.tech/beget_opensubtitles_proxy.php';
+    var OS_HASH_CHUNK = 65536; // 64 КиБ — размер чанка по спецификации алгоритма
+
+    // Реализация алгоритма moviehash (общий для OpenSubtitles/SubDB):
+    // hash = размер файла + сумма 64-битных слов первых и последних 64КиБ
+    // (по модулю 2^64). Не зависит от имени файла — только от содержимого.
+    function computeOpenSubtitlesHash(videoUrl) {
+        function readRange(start, end) {
+            return fetch(videoUrl, { headers: { Range: 'bytes=' + start + '-' + end } })
+                .then(function (r) { return r.arrayBuffer(); });
+        }
+        return fetch(videoUrl, { headers: { Range: 'bytes=0-' + (OS_HASH_CHUNK - 1) } }).then(function (r) {
+            var contentRange = r.headers.get('Content-Range'); // "bytes 0-65535/1234567"
+            var m = contentRange && /\/(\d+)$/.exec(contentRange);
+            var totalSize = m ? parseInt(m[1], 10) : 0;
+            if (!totalSize || totalSize < OS_HASH_CHUNK * 2) {
+                throw new Error('файл слишком мал или сервер не отдал Content-Range для хэширования');
+            }
+            return r.arrayBuffer().then(function (firstBuf) {
+                return readRange(totalSize - OS_HASH_CHUNK, totalSize - 1).then(function (lastBuf) {
+                    var MASK64 = (1n << 64n) - 1n;
+                    var hash = BigInt(totalSize) & MASK64;
+                    function sumChunk(buf) {
+                        var view = new DataView(buf);
+                        var words = Math.floor(buf.byteLength / 8);
+                        for (var i = 0; i < words; i++) {
+                            hash = (hash + view.getBigUint64(i * 8, true)) & MASK64;
+                        }
+                    }
+                    sumChunk(firstBuf);
+                    sumChunk(lastBuf);
+                    return { hash: hash.toString(16).padStart(16, '0'), size: totalSize };
+                });
+            });
+        });
+    }
+
+    // Грубый разбор имени файла на название + сезон/серию — запасной
+    // вариант, если поиск по хэшу ничего не нашёл (совсем новый релиз,
+    // ещё не попавший в базу). Точность тут заведомо хуже хэша, поэтому
+    // используется только как последний резерв.
+    function guessTitleFromFilename(name) {
+        var base = name.replace(/\.[^.]+$/, '');
+        var seasonEp = /[Ss](\d{1,2})[Ee](\d{1,3})/.exec(base);
+        var season = seasonEp ? parseInt(seasonEp[1], 10) : null;
+        var episode = seasonEp ? parseInt(seasonEp[2], 10) : null;
+        var cut = seasonEp ? base.slice(0, seasonEp.index) : base;
+        var title = cut
+            .replace(/[._]/g, ' ')
+            .replace(/\b(19|20)\d{2}\b.*$/, '') // всё после года выпуска — почти всегда разрешение/кодек/релиз-группа
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+        return { title: title || cut.trim(), season: season, episode: episode };
+    }
+
+    function osProxyRequest(body) {
+        return fetch(OPENSUBTITLES_PROXY_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }).then(function (r) { return r.json(); });
+    }
+
+    // Возвращает Promise<string текста субтитров|null>
+    function findOpenSubtitlesSubtitle(videoUrl, filenameHint) {
+        function pickBestResult(results) {
+            if (!results || !results.length) return null;
+            // предпочитаем русские (не придётся переводить), иначе любой
+            // другой язык — resolveTtsText сам переведёт при синтезе
+            return results.find(function (r) { return r.language === 'ru'; }) || results[0];
+        }
+        function downloadAndReturn(result) {
+            if (!result) return null;
+            console.log(LOG_PREFIX, 'OpenSubtitles: нашёл субтитры (' + result.language + '), release:', result.release);
+            return osProxyRequest({ action: 'download', file_id: result.file_id }).then(function (res) {
+                if (res && res.text) return res.text;
+                console.warn(LOG_PREFIX, 'OpenSubtitles: не удалось скачать найденный файл', res && res.error);
+                return null;
+            });
+        }
+
+        return computeOpenSubtitlesHash(videoUrl).catch(function (err) {
+            console.warn(LOG_PREFIX, 'OpenSubtitles: не удалось посчитать хэш видео, пропускаю поиск по хэшу', err);
+            return null;
+        }).then(function (hashInfo) {
+            if (!hashInfo) return null;
+            console.log(LOG_PREFIX, 'OpenSubtitles: ищу по хэшу видео', hashInfo.hash);
+            return osProxyRequest({ action: 'search', moviehash: hashInfo.hash }).then(function (res) {
+                return pickBestResult(res && res.results);
+            });
+        }).then(function (result) {
+            if (result) return downloadAndReturn(result);
+            if (!filenameHint) return null;
+            var guess = guessTitleFromFilename(filenameHint);
+            if (!guess.title) return null;
+            console.log(LOG_PREFIX, 'OpenSubtitles: по хэшу не нашлось, пробую по названию:', JSON.stringify(guess));
+            return osProxyRequest({ action: 'search', query: guess.title, season: guess.season, episode: guess.episode }).then(function (res) {
+                return downloadAndReturn(pickBestResult(res && res.results));
+            });
+        }).catch(function (err) {
+            console.warn(LOG_PREFIX, 'OpenSubtitles: поиск не удался', err);
+            return null;
+        });
+    }
+
     var lastHandledVideoUrl = '';
 
     function handleVideoSource(videoUrl, dataSubtitles) {
@@ -878,6 +997,18 @@
         // конца устояться в момент события 'start', и Lampa могла отдать
         // ссылку со "старым"/неверным index= — TorrServer на такой запрос
         // просто никогда не ответит (не 404, а вечное ожидание).
+        function tryOpenSubtitlesFallback() {
+            var filenameHint = null;
+            var m = /\/stream\/([^?]*)\?/i.exec(videoUrl);
+            if (m) { try { filenameHint = decodeURIComponent(m[1]); } catch (e) { filenameHint = m[1]; } }
+            var myGeneration = generation;
+            var video = Lampa.PlayerVideo.video();
+            findOpenSubtitlesSubtitle(videoUrl, filenameHint).then(function (text) {
+                if (text) { console.log(LOG_PREFIX, 'озвучиваю по субтитрам с OpenSubtitles'); startDubFromText('opensubtitles', text, myGeneration, video); }
+                else console.warn(LOG_PREFIX, 'субтитров нигде не нашлось (ни в раздаче, ни на OpenSubtitles)');
+            });
+        }
+
         if (/\/stream\/[^?]*\?link=[0-9a-f]+/i.test(videoUrl)) {
             console.log(LOG_PREFIX, 'источник — TorrServer, спрашиваю свежий индекс субтитров напрямую:', videoUrl);
             findTorrserverSubtitleUrl(videoUrl).then(function (url) {
@@ -885,7 +1016,7 @@
                 console.warn(LOG_PREFIX, 'в этой раздаче не нашлось файла субтитров (.ass/.srt/.vtt) через TorrServer, пробую data.subtitles как запасной вариант');
                 var subs = dataSubtitles || [];
                 if (subs.length) startDub(subs[0].url);
-                else console.warn(LOG_PREFIX, 'субтитров нигде не нашлось');
+                else tryOpenSubtitlesFallback();
             });
             return;
         }
@@ -899,7 +1030,8 @@
             console.log(LOG_PREFIX, 'запускаю озвучку по дорожке из data.subtitles:', subs[0].url);
             startDub(subs[0].url);
         } else {
-            console.warn(LOG_PREFIX, 'у этого видео нет субтитровой дорожки');
+            console.warn(LOG_PREFIX, 'у этого видео нет субтитровой дорожки, пробую OpenSubtitles');
+            tryOpenSubtitlesFallback();
         }
     }
 
