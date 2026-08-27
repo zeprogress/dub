@@ -382,6 +382,63 @@
     }
 
     // ---------------------------------------------------------------
+    // Перевод не-русских субтитров (английских и т.п.) перед озвучкой —
+    // тот же принцип, что у TTS: свой прокси на Beget, т.к. у Google Translate
+    // нет CORS на неофициальном (бесплатном, без ключа) эндпоинте. "Не
+    // русский" определяем грубой эвристикой (нет кириллицы, но есть
+    // латиница) — точный детект языка тут избыточен, subtitle-файл почти
+    // всегда целиком на одном языке.
+    // ---------------------------------------------------------------
+    var TRANSLATE_PROXY_URL = 'http://zeprogut.beget.tech/beget_translate_proxy.php';
+    var CYRILLIC_RE = /[а-яёА-ЯЁ]/;
+
+    function needsTranslation(text) {
+        return !CYRILLIC_RE.test(text) && /[a-zA-Z]/.test(text);
+    }
+
+    function translateToRu(text) {
+        return new Promise(function (resolve) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', TRANSLATE_PROXY_URL, true);
+            xhr.responseType = 'json';
+            xhr.timeout = TTS_FETCH_TIMEOUT_MS;
+            xhr.onload = function () {
+                if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.translated) {
+                    resolve(xhr.response.translated);
+                } else {
+                    console.warn(LOG_PREFIX, 'перевод не удался (HTTP ' + xhr.status + '), озвучиваю как есть:', text);
+                    resolve(text);
+                }
+            };
+            xhr.onerror = function () {
+                console.warn(LOG_PREFIX, 'ошибка сети при переводе, озвучиваю как есть:', text);
+                resolve(text);
+            };
+            xhr.ontimeout = function () {
+                console.warn(LOG_PREFIX, 'перевод завис, озвучиваю как есть:', text);
+                resolve(text);
+            };
+            xhr.send(JSON.stringify({ text: text, target: 'ru' }));
+        });
+    }
+
+    // Переводим один раз на реплику и кэшируем результат прямо на cue —
+    // повторный синтез той же реплики (например, после коррекции скорости
+    // из-за слишком длинной озвучки) не должен переводить её ещё раз.
+    function resolveTtsText(cue) {
+        if (cue.ttsText) return Promise.resolve(cue.ttsText);
+        if (!needsTranslation(cue.text)) {
+            cue.ttsText = cue.text;
+            return Promise.resolve(cue.ttsText);
+        }
+        return translateToRu(cue.text).then(function (translated) {
+            cue.ttsText = translated;
+            console.log(LOG_PREFIX, 'переведено:', JSON.stringify(cue.text), '->', JSON.stringify(translated));
+            return translated;
+        });
+    }
+
+    // ---------------------------------------------------------------
     // Контроллер дубляжа для одного сеанса воспроизведения
     // ---------------------------------------------------------------
     function DubController(video, cues) {
@@ -455,34 +512,38 @@
         this.state[i] = 'loading';
         var cue = this.cues[i];
         var referenceId = referenceIdForCue(cue);
-        console.log(LOG_PREFIX, 'синтезирую реплику', i, JSON.stringify(cue.text), 'голос:', VOICES[referenceId] || referenceId, cue.character ? '(' + cue.character + ')' : '');
 
-        synthWithRetries(i, cue.text, referenceId, 1).then(function (buf) {
+        resolveTtsText(cue).then(function (text) {
             if (self.destroyed) return;
-            console.log(LOG_PREFIX, 'реплика', i, 'получена от Fish Audio,', buf.byteLength, 'байт');
-            return self.ctx.decodeAudioData(buf.slice(0)).then(function (audioBuf) {
+            console.log(LOG_PREFIX, 'синтезирую реплику', i, JSON.stringify(text), 'голос:', VOICES[referenceId] || referenceId, cue.character ? '(' + cue.character + ')' : '');
+
+            return synthWithRetries(i, text, referenceId, 1).then(function (buf) {
                 if (self.destroyed) return;
-                var allowedMs = self.budgetMs(i) + OVERLAP_TOLERANCE_MS;
-                var synthMs = audioBuf.duration * 1000;
-                if (synthMs <= allowedMs) {
-                    self.buffers[i] = audioBuf;
-                    self.state[i] = 'ready';
-                    console.log(LOG_PREFIX, 'реплика', i, 'готова, ' + synthMs.toFixed(0) + 'мс, без коррекции скорости');
-                    return;
-                }
-                // не уложились даже с запасом на наложение — досинтезируем с ускорением,
-                // но не быстрее MAX_SPEED — после этого разобрать речь почти нереально,
-                // лучше оставить небольшое наложение на следующую реплику
-                var speed = Math.min(MAX_SPEED, synthMs / allowedMs);
-                console.log(LOG_PREFIX, 'реплика', i, 'не укладывается (' + synthMs.toFixed(0) + 'мс из ' + allowedMs.toFixed(0) + 'мс), ускоряю в', speed.toFixed(2), 'раза' + (speed >= MAX_SPEED ? ' (потолок, останется небольшое наложение)' : ''));
-                return synthWithRetries(i, cue.text, referenceId, speed).then(function (buf2) {
-                    if (self.destroyed) return null;
-                    return self.ctx.decodeAudioData(buf2.slice(0));
-                }).then(function (audioBuf2) {
-                    if (self.destroyed || !audioBuf2) return;
-                    self.buffers[i] = audioBuf2;
-                    self.state[i] = 'ready';
-                    console.log(LOG_PREFIX, 'реплика', i, 'готова после ускорения');
+                console.log(LOG_PREFIX, 'реплика', i, 'получена от Fish Audio,', buf.byteLength, 'байт');
+                return self.ctx.decodeAudioData(buf.slice(0)).then(function (audioBuf) {
+                    if (self.destroyed) return;
+                    var allowedMs = self.budgetMs(i) + OVERLAP_TOLERANCE_MS;
+                    var synthMs = audioBuf.duration * 1000;
+                    if (synthMs <= allowedMs) {
+                        self.buffers[i] = audioBuf;
+                        self.state[i] = 'ready';
+                        console.log(LOG_PREFIX, 'реплика', i, 'готова, ' + synthMs.toFixed(0) + 'мс, без коррекции скорости');
+                        return;
+                    }
+                    // не уложились даже с запасом на наложение — досинтезируем с ускорением,
+                    // но не быстрее MAX_SPEED — после этого разобрать речь почти нереально,
+                    // лучше оставить небольшое наложение на следующую реплику
+                    var speed = Math.min(MAX_SPEED, synthMs / allowedMs);
+                    console.log(LOG_PREFIX, 'реплика', i, 'не укладывается (' + synthMs.toFixed(0) + 'мс из ' + allowedMs.toFixed(0) + 'мс), ускоряю в', speed.toFixed(2), 'раза' + (speed >= MAX_SPEED ? ' (потолок, останется небольшое наложение)' : ''));
+                    return synthWithRetries(i, text, referenceId, speed).then(function (buf2) {
+                        if (self.destroyed) return null;
+                        return self.ctx.decodeAudioData(buf2.slice(0));
+                    }).then(function (audioBuf2) {
+                        if (self.destroyed || !audioBuf2) return;
+                        self.buffers[i] = audioBuf2;
+                        self.state[i] = 'ready';
+                        console.log(LOG_PREFIX, 'реплика', i, 'готова после ускорения');
+                    });
                 });
             });
         }).catch(function (err) {
