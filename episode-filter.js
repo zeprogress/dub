@@ -50,10 +50,33 @@
         return { from: from, to: to };
     }
 
+    // Запасной разбор диапазона серий прямо по названию — на случай, когда
+    // Lampa (components/torrents/parser.js) сама не распознала episodes.
+    // Конкретный подтверждённый пробел в её регулярках: украинское
+    // множественное "серії" не учтено (учтены только русское "серии" и
+    // украинское единственное "серія") — из-за этого раздачи вида
+    // "Сезон 3, серії 1-8" получали general.episodes == null и наш плагин
+    // (намеренно не скрывающий нераспознанное) показывал их при любом
+    // номере серии. Тут — тот же принцип, что и у Lampa, плюс "серії".
+    var EPISODE_TITLE_RE = [
+        /(\d{1,3})\s*[-–]\s*(\d{1,3})\s*(?:серии|серія|серії|episodes?)/i,
+        /(?:серии|серія|серії|episodes?)\D{0,3}(\d{1,3})\s*[-–]\s*(\d{1,3})/i
+    ];
+
+    function parseEpisodesFromTitle(title) {
+        if (!title) return null;
+        for (var i = 0; i < EPISODE_TITLE_RE.length; i++) {
+            var m = EPISODE_TITLE_RE[i].exec(title);
+            if (m) return { from: parseInt(m[1], 10), to: parseInt(m[2], 10) };
+        }
+        return null;
+    }
+
     function matchesEpisode(element, wanted) {
         if (!wanted) return true;
         var range = parseEpisodeRange(element && element.general && element.general.episodes);
-        if (!range) return true; // не распознали — не скрываем, см. комментарий в шапке файла
+        if (!range) range = parseEpisodesFromTitle(element && element.Title);
+        if (!range) return true; // и так не распознали — не скрываем, см. комментарий в шапке файла
         return wanted >= range.from && wanted <= range.to;
     }
 
