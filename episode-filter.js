@@ -108,9 +108,36 @@
             if (origDestroy) origDestroy.apply(this, arguments);
         };
 
+        // Перед показом списка серий сначала дорендериваем ВСЕ уже найденные
+        // раздачи (next() у Lampa раскрывает уже известный результат поиска
+        // порциями, без сети — сам список раздач приходит одним запросом) и
+        // собираем реальные номера серий из их element.general.episodes —
+        // так в списке будут только серии, которые действительно где-то
+        // присутствуют, а не жёстко 1..60.
+        function collectKnownEpisodeNumbers() {
+            var prevLen = -1, guard = 0;
+            while (seen.length !== prevLen && guard < 200) {
+                prevLen = seen.length;
+                try { self.next(); } catch (e) { break; }
+                guard++;
+            }
+            var nums = {};
+            seen.forEach(function (pair) {
+                var range = parseEpisodeRange(pair.element && pair.element.general && pair.element.general.episodes);
+                if (!range) return;
+                for (var n = range.from; n <= range.to && (n - range.from) < 200; n++) nums[n] = true;
+            });
+            return Object.keys(nums).map(Number).sort(function (a, b) { return a - b; });
+        }
+
         function openEpisodePicker() {
+            var known = collectKnownEpisodeNumbers();
+            // если вообще ничего не распознали (редкий случай — все раздачи
+            // без разбираемого номера серии в названии) — не оставляем
+            // пользователя без выбора, показываем старый запасной диапазон
+            var numbers = known.length ? known : Array.apply(null, { length: MAX_EPISODE }).map(function (_, i) { return i + 1; });
             var items = [{ title: Lampa.Lang.translate('torrent_parser_any_two') || 'Любая', value: null }];
-            for (var i = 1; i <= MAX_EPISODE; i++) items.push({ title: String(i), value: i, selected: i === wantedEpisode });
+            numbers.forEach(function (n) { items.push({ title: String(n), value: n, selected: n === wantedEpisode }); });
             Lampa.Select.show({
                 title: 'Серия',
                 items: items,
