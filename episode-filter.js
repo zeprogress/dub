@@ -180,6 +180,13 @@
             $row.on('hover:enter', openEpisodePicker);
             $row.on('click', openEpisodePicker);
             $seasonRow.after($row);
+            // Коллекция фокусируемых элементов пульта (Lampa.Controller)
+            // собирается один раз при открытии панели "Фильтр" — наша
+            // строка вставляется чуть позже (опрос) и в эту коллекцию не
+            // попадает: мышь/клик всё ещё работают (обычный DOM-обработчик),
+            // а пульт её просто перескакивает. collectionAppend добавляет
+            // элемент в уже существующую навигацию, не сбрасывая её.
+            try { Lampa.Controller.collectionAppend($row); } catch (e) {}
         }, 400);
     }
 
