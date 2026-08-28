@@ -109,7 +109,7 @@
         };
 
         function openEpisodePicker() {
-            var items = [{ title: Lang.translate('torrent_parser_any_two') || 'Любая', value: null }];
+            var items = [{ title: Lampa.Lang.translate('torrent_parser_any_two') || 'Любая', value: null }];
             for (var i = 1; i <= MAX_EPISODE; i++) items.push({ title: String(i), value: i, selected: i === wantedEpisode });
             Lampa.Select.show({
                 title: 'Серия',
@@ -140,7 +140,7 @@
         var injectTimer = setInterval(function () {
             if ($row && document.body.contains($row[0])) return; // уже вставлена и жива
             var $seasonTitle = $('.selectbox-item__title').filter(function () {
-                return $(this).text().trim() === (Lang.translate('torrent_parser_season') || 'Сезон');
+                return $(this).text().trim() === (Lampa.Lang.translate('torrent_parser_season') || 'Сезон');
             }).first();
             if (!$seasonTitle.length) return;
             var $seasonRow = $seasonTitle.closest('.selectbox-item');
